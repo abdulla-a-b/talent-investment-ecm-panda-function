@@ -417,8 +417,8 @@ body.nodata .view .empty-state{display:block}
 const SEED={"meta": {"company": "", "baseline": "", "latestLabel": "", "total": 0, "units": 0, "healthyOpsSupport": 4.0, "healthyQ3": 10.0, "healthyQ4Max": 7.0}, "series": {"monthly": [], "quarterly": [], "yearly": []}};
 /* ===== CONFIG — change before deploying (see README) ===== */
 const CONFIG={
-  orgName:"https://script.google.com/macros/s/AKfycbx5X-sPBOfCAXIHeqcIACfz5Xb8Q5GSetPly-1Zk8qYyUkgqgMQV7Z9mzmA8h0PpaZNTw/exec",                  // your organisation name (shown in header). Empty = generic.
-  endpoint:"https://docs.google.com/spreadsheets/d/18H-aukLm_Q4Bi9Pb4ekLOB3tf0waEfGMe03WucC4a-U/edit?gid=795988443#gid=795988443",                 // Apps Script Web App /exec URL. Empty = local cache only.
+  orgName:"",                  // your organisation name (shown in header). Empty = generic.
+  endpoint:"https://script.google.com/macros/s/AKfycbx5X-sPBOfCAXIHeqcIACfz5Xb8Q5GSetPly-1Zk8qYyUkgqgMQV7Z9mzmA8h0PpaZNTw/exec",                 // Apps Script Web App /exec URL. Empty = local cache only.
   uploadToken:"CHANGE-ME-TOKEN",
   // SHA-256 of access key. Default key is "ecm-admin-2026" — CHANGE IT.
   gateHash:"1a56c3a43524b3df2a3146465f0edf81f895eb672fb43f861078f1858f98e218"
@@ -617,9 +617,10 @@ function classifyRow(r){
  else{if(LAB_SUPPORT.some(k=>desig.includes(k)))func='Support';else if(['production','quality assurance'].includes(dept))func='Operations';else func='Support';}
  if(isStaff&&func==='Operations')return'Q3';if(isStaff)return'Q4';if(func==='Operations')return'Q1';return'Q2';
 }
-function buildPeriod(rows,label){
+function buildPeriod(rows,label,classFn){
+ classFn=classFn||classifyRow;
  const head={Q1:0,Q2:0,Q3:0,Q4:0},cost={Q1:0,Q2:0,Q3:0,Q4:0};let payroll=0;
- rows.forEach(r=>{const q=classifyRow(r);head[q]++;const g=parseFloat(r.OGross)||0;cost[q]+=g;payroll+=g;});
+ rows.forEach(r=>{const q=classFn(r);head[q]++;const g=parseFloat(r.OGross)||0;cost[q]+=g;payroll+=g;});
  const tot=rows.length;
  let M=0;rows.forEach(r=>{const d=norm(r.DesigName);if(['manager','general manager','deputy manager'].some(k=>d.includes(k)))M++;});
  const Wtier=head.Q1+head.Q2,staffLayer=head.Q3+head.Q4;
@@ -646,8 +647,36 @@ const COLMAP={
  dept:['deptname','department','dept','departmentname','division','section','functionalarea'],
  gross:['ogross','gross','grosssalary','salary','grosspay','totalsalary','grossamount','monthlysalary','grosswage','grosssal','ctc','netpay','basicgross'],
  name:['name','company','unit','companyname','unitname','factory','location','branch','plant','entity'],
- jdate:['jdate','joindate','joiningdate','doj','dateofjoining','joiningdt','joined','hiredate','dateofjoin']
+ jdate:['jdate','joindate','joiningdate','doj','dateofjoining','joiningdt','joined','hiredate','dateofjoin'],
+ quad:['ecm','quadrant','classification','segment','ecmsegment','ecmquadrant','quad','ecmclass','ecmcategory','ecmtype']
 };
+function toNum(v){if(typeof v==='number')return v;const s=String(v==null?'':v).replace(/[, ]/g,'');return /^-?\d+(\.\d+)?$/.test(s)?parseFloat(s):null}
+function parseQuad(v){if(v==null)return null;const s=String(v).toLowerCase();
+ let m=s.match(/q\s*([1-4])(?![0-9])/);if(m)return 'Q'+m[1];
+ m=s.match(/^\s*([1-4])\s*[-:.\s]/);if(m&&/(labour|labor|worker|staff|operation|support)/.test(s))return 'Q'+m[1];
+ const lab=/labour|labor|worker/.test(s),stf=/staff/.test(s),sup=/support/.test(s),ops=/operation/.test(s);
+ if(stf&&sup)return 'Q4';if(stf&&ops)return 'Q3';if(lab&&sup)return 'Q2';if(lab&&ops)return 'Q1';return null}
+function periodFromCounts(head,label){
+ const tot=head.Q1+head.Q2+head.Q3+head.Q4;
+ return {label,total:tot,head:{Q1:head.Q1,Q2:head.Q2,Q3:head.Q3,Q4:head.Q4},cost:{Q1:0,Q2:0,Q3:0,Q4:0},payroll:null,
+  tiers:{W:head.Q1+head.Q2,S:head.Q3+head.Q4,M:0,total:tot},
+  opsSupport:+((head.Q1+head.Q3)/Math.max(1,head.Q2+head.Q4)).toFixed(2),
+  q3pct:+(head.Q3/Math.max(1,tot)*100).toFixed(1),q4pct:+(head.Q4/Math.max(1,tot)*100).toFixed(1),
+  directIndirect:+(head.Q1/Math.max(1,head.Q2)).toFixed(1),recon:false};
+}
+function detectSummary(wb){
+ for(const name of wb.SheetNames){
+  const aoa=XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,defval:''});
+  const head={Q1:0,Q2:0,Q3:0,Q4:0};let distinct=0,seen={},rowsWithQuad=0;
+  aoa.forEach(row=>{if(!Array.isArray(row))return;let q=null;for(const c of row){const pq=parseQuad(c);if(pq){q=pq;break}}
+   if(!q)return;rowsWithQuad++;
+   let best=null;for(const c of row){const n=toNum(c);if(n!=null&&n<1e7&&(best==null||n>best))best=n}
+   if(best!=null&&!seen[q]){head[q]=Math.round(best);seen[q]=1;distinct++}});
+  // a real summary has a quadrant label on only a handful of rows; a per-employee ECM column has many
+  if(distinct>=3&&rowsWithQuad<=12)return {head,rows:distinct};
+ }
+ return null;
+}
 function resolveHeaders(hdrs){const m={};hdrs.forEach(h=>{const k=headerKey(h);for(const c in COLMAP){if(COLMAP[c].indexOf(k)>=0&&!m[c])m[c]=h}});return m}
 function pickSheet(wb){
  let best=null;
@@ -669,18 +698,23 @@ function handleFile(f){
  rd.onload=ev=>{
   try{
    const wb=XLSX.read(new Uint8Array(ev.target.result),{type:'array',cellDates:true});
+   const sum=detectSummary(wb);
+   if(sum){staged=periodFromCounts(sum.head,document.getElementById('plabel').value);showPreview(staged,sum.head.Q1+sum.head.Q2+sum.head.Q3+sum.head.Q4);showBanner('ok','Read as a summary \u2014 used your Q1\u2013Q4 totals directly (no per-employee re-classification).');return;}
    const picked=pickSheet(wb);
    if(!picked){showBanner('err','No data rows found in this workbook.');return}
    const {rows,map,sheet,hdrs}=picked;
    const miss=['type','desig','dept'].filter(k=>!map[k]);
    if(miss.length){showBanner('err','Could not find a column for: '+miss.map(k=>PRETTY[k]).join(', ')+'. Headers found on sheet "'+sheet+'": '+hdrs.join(', ')+'. Rename one of these to match, or tell your administrator the mapping.');return}
-   let std=rows.map(r=>({Type:r[map.type],DesigName:r[map.desig],DeptName:r[map.dept],OGross:map.gross?r[map.gross]:0,Name:map.name?r[map.name]:'',JDate:map.jdate?r[map.jdate]:''}));
+   let std=rows.map(r=>({Type:r[map.type],DesigName:r[map.desig],DeptName:r[map.dept],OGross:map.gross?r[map.gross]:0,Name:map.name?r[map.name]:'',JDate:map.jdate?r[map.jdate]:'',ECM:map.quad?r[map.quad]:''}));
    std=std.filter(r=>String(r.Type).trim()||String(r.DesigName).trim()||String(r.DeptName).trim());
    if(!std.length){showBanner('err','Found the columns but no employee rows on sheet "'+sheet+'".');return}
-   staged=buildPeriod(std,document.getElementById('plabel').value);
+   const useExplicit=map.quad&&std.some(r=>parseQuad(r.ECM));
+   const classFn=useExplicit?(r=>parseQuad(r.ECM)||classifyRow(r)):classifyRow;
+   staged=buildPeriod(std,document.getElementById('plabel').value,classFn);
    staged._meta={sheet:sheet,gross:!!map.gross};
    showPreview(staged,std.length);
-   if(!map.gross){const bn=document.getElementById('pbanner');bn.insertAdjacentHTML('beforeend',' (no salary column detected \u2014 cost shown as 0; headcount & structure are fine.)');}
+   if(useExplicit)showBanner('ok','Used your "'+map.quad+'" column for classification (kept your Q1\u2013Q4 assignments).');
+   else if(!map.gross){const bn=document.getElementById('pbanner');bn.insertAdjacentHTML('beforeend',' (no salary column detected \u2014 cost shown as 0; headcount & structure are fine.)');}
   }catch(err){showBanner('err','Could not read file: '+err.message)}
  };
  rd.readAsArrayBuffer(f);
