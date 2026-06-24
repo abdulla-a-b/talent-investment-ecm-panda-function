@@ -678,14 +678,23 @@ function detectSummary(wb){
  return null;
 }
 function resolveHeaders(hdrs){const m={};hdrs.forEach(h=>{const k=headerKey(h);for(const c in COLMAP){if(COLMAP[c].indexOf(k)>=0&&!m[c])m[c]=h}});return m}
+function findQuadColumn(rows){
+ if(!rows.length)return null;
+ const cols=Object.keys(rows[0]),sample=rows.slice(0,Math.min(rows.length,400));
+ let bestCol=null,bestHits=0;
+ cols.forEach(c=>{let hits=0;sample.forEach(r=>{if(parseQuad(r[c]))hits++;});if(hits>bestHits){bestHits=hits;bestCol=c;}});
+ return bestHits>=sample.length*0.6?bestCol:null;   // a real ECM column classifies most rows
+}
 function pickSheet(wb){
  let best=null;
  for(const name of wb.SheetNames){
    const rows=XLSX.utils.sheet_to_json(wb.Sheets[name],{defval:''});
    if(!rows.length)continue;
    const hdrs=Object.keys(rows[0]),map=resolveHeaders(hdrs);
-   if(map.type&&map.desig&&map.dept)return {rows,map,sheet:name,hdrs};
-   if(!best)best={rows,map,sheet:name,hdrs};
+   const quadCol=map.quad||findQuadColumn(rows);            // detect by header OR by contents
+   const cand={rows,map,quadCol,sheet:name,hdrs};
+   if(quadCol||(map.type&&map.desig&&map.dept))return cand; // usable sheet
+   if(!best)best=cand;
  }
  return best;
 }
@@ -702,19 +711,29 @@ function handleFile(f){
    if(sum){staged=periodFromCounts(sum.head,document.getElementById('plabel').value);showPreview(staged,sum.head.Q1+sum.head.Q2+sum.head.Q3+sum.head.Q4);showBanner('ok','Read as a summary \u2014 used your Q1\u2013Q4 totals directly (no per-employee re-classification).');return;}
    const picked=pickSheet(wb);
    if(!picked){showBanner('err','No data rows found in this workbook.');return}
-   const {rows,map,sheet,hdrs}=picked;
+   const {rows,map,quadCol,sheet,hdrs}=picked;
+   if(quadCol){
+    // (B) explicit classification column found (by name or contents) — honour it exactly
+    let std=rows.map(r=>({DesigName:map.desig?r[map.desig]:'',DeptName:map.dept?r[map.dept]:'',Type:map.type?r[map.type]:'',OGross:map.gross?r[map.gross]:0,Name:map.name?r[map.name]:'',JDate:map.jdate?r[map.jdate]:'',ECM:r[quadCol]}));
+    std=std.filter(r=>parseQuad(r.ECM));                 // count only classified employee rows
+    if(!std.length){showBanner('err','Found a classification column ("'+quadCol+'") but no rows had Q1\u2013Q4 values.');return}
+    staged=buildPeriod(std,document.getElementById('plabel').value,r=>parseQuad(r.ECM));
+    staged._meta={sheet:sheet,gross:!!map.gross};
+    showPreview(staged,std.length);
+    showBanner('ok','Used your "'+quadCol+'" column \u2014 kept your exact Q1\u2013Q4 split ('+std.length+' classified rows).'+(map.gross?'':' No salary column, so cost shows 0.'));
+    return;
+   }
+   // (C) no classification present — keyword fallback needs Type/Designation/Department
    const miss=['type','desig','dept'].filter(k=>!map[k]);
-   if(miss.length){showBanner('err','Could not find a column for: '+miss.map(k=>PRETTY[k]).join(', ')+'. Headers found on sheet "'+sheet+'": '+hdrs.join(', ')+'. Rename one of these to match, or tell your administrator the mapping.');return}
-   let std=rows.map(r=>({Type:r[map.type],DesigName:r[map.desig],DeptName:r[map.dept],OGross:map.gross?r[map.gross]:0,Name:map.name?r[map.name]:'',JDate:map.jdate?r[map.jdate]:'',ECM:map.quad?r[map.quad]:''}));
+   if(miss.length){showBanner('err','No classification column found, and the columns needed to derive one are missing: '+miss.map(k=>PRETTY[k]).join(', ')+'. Headers on sheet "'+sheet+'": '+hdrs.join(', ')+'. Add an ECM column (values Q1\u2013Q4) or rename a column to match.');return}
+   let std=rows.map(r=>({Type:r[map.type],DesigName:r[map.desig],DeptName:r[map.dept],OGross:map.gross?r[map.gross]:0,Name:map.name?r[map.name]:'',JDate:map.jdate?r[map.jdate]:''}));
    std=std.filter(r=>String(r.Type).trim()||String(r.DesigName).trim()||String(r.DeptName).trim());
    if(!std.length){showBanner('err','Found the columns but no employee rows on sheet "'+sheet+'".');return}
-   const useExplicit=map.quad&&std.some(r=>parseQuad(r.ECM));
-   const classFn=useExplicit?(r=>parseQuad(r.ECM)||classifyRow(r)):classifyRow;
-   staged=buildPeriod(std,document.getElementById('plabel').value,classFn);
+   staged=buildPeriod(std,document.getElementById('plabel').value,classifyRow);
    staged._meta={sheet:sheet,gross:!!map.gross};
    showPreview(staged,std.length);
-   if(useExplicit)showBanner('ok','Used your "'+map.quad+'" column for classification (kept your Q1\u2013Q4 assignments).');
-   else if(!map.gross){const bn=document.getElementById('pbanner');bn.insertAdjacentHTML('beforeend',' (no salary column detected \u2014 cost shown as 0; headcount & structure are fine.)');}
+   showBanner('warn','No ECM column found \u2014 classified from job titles by keyword (may differ from your own split). Add an ECM column with Q1\u2013Q4 to use your exact classification.');
+   if(!map.gross){const bn=document.getElementById('pbanner');bn.insertAdjacentHTML('beforeend',' No salary column detected \u2014 cost shown as 0.');}
   }catch(err){showBanner('err','Could not read file: '+err.message)}
  };
  rd.readAsArrayBuffer(f);
