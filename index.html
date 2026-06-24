@@ -397,6 +397,7 @@ body.nodata .view .empty-state{display:block}
   <div style="margin-top:24px">
    <span class="eyebrow">Stored periods</span>
    <div class="card" style="margin-top:10px;overflow-x:auto"><table class="tbl"><thead><tr><th>Period</th><th>Cadence</th><th>Total</th><th>Q1</th><th>Q2</th><th>Q3</th><th>Q4</th><th>Ops:Sup</th><th>Q3 %</th><th>Payroll ৳</th><th></th></tr></thead><tbody id="storedbody"></tbody></table></div>
+   <div style="margin-top:12px"><button class="btn ghost" id="clearAll" style="color:var(--brick);border-color:#E6C2BB">Clear all stored periods</button></div>
    <div id="syncnote" class="banner info" style="margin-top:12px"></div>
   </div>
  </div></section></div>
@@ -416,8 +417,8 @@ body.nodata .view .empty-state{display:block}
 const SEED={"meta": {"company": "", "baseline": "", "latestLabel": "", "total": 0, "units": 0, "healthyOpsSupport": 4.0, "healthyQ3": 10.0, "healthyQ4Max": 7.0}, "series": {"monthly": [], "quarterly": [], "yearly": []}};
 /* ===== CONFIG — change before deploying (see README) ===== */
 const CONFIG={
-  orgName:"",                  // your organisation name (shown in header). Empty = generic.
-  endpoint:"https://script.google.com/macros/s/AKfycbws0ns5gW3hUHZHmcZY9qW1t35kwslZOTJiqOWOXfC4fd9BAi1TXmQLsKqVxMopeMq52w/exec",                 // Apps Script Web App /exec URL. Empty = local cache only.
+  orgName:"https://script.google.com/macros/s/AKfycbx5X-sPBOfCAXIHeqcIACfz5Xb8Q5GSetPly-1Zk8qYyUkgqgMQV7Z9mzmA8h0PpaZNTw/exec",                  // your organisation name (shown in header). Empty = generic.
+  endpoint:"https://docs.google.com/spreadsheets/d/18H-aukLm_Q4Bi9Pb4ekLOB3tf0waEfGMe03WucC4a-U/edit?gid=795988443#gid=795988443",                 // Apps Script Web App /exec URL. Empty = local cache only.
   uploadToken:"CHANGE-ME-TOKEN",
   // SHA-256 of access key. Default key is "ecm-admin-2026" — CHANGE IT.
   gateHash:"1a56c3a43524b3df2a3146465f0edf81f895eb672fb43f861078f1858f98e218"
@@ -722,7 +723,18 @@ function renderStored(){
   tb.insertAdjacentHTML('beforeend',`<tr><td>${p.label}${p.recon?' <span style="color:var(--muted);font-weight:400">· recon</span>':''}</td><td>${cad}</td><td>${fmt(p.total)}</td><td>${p.head.Q1}</td><td>${p.head.Q2}</td><td>${p.head.Q3}</td><td>${p.head.Q4}</td><td>${p.opsSupport}</td><td ${thin}>${p.q3pct}%</td><td>${p.payroll==null?'—':fmt(p.payroll)}</td><td>${p.recon?'':`<button class="btn ghost" style="padding:5px 9px;font-size:10px" onclick="delPeriod('${cad}',${i})">remove</button>`}</td></tr>`);
  }));
 }
-window.delPeriod=(cad,i)=>{SERIES[cad].splice(i,1);cacheLocal();renderStored();refreshDataState();renderTrends(curCad);showSync('Removed period from '+cad+' series.')};
+window.delPeriod=(cad,i)=>{
+ const p=SERIES[cad][i],label=p?p.label:null;
+ SERIES[cad].splice(i,1);cacheLocal();renderStored();refreshDataState();renderTrends(curCad);
+ if(CONFIG.endpoint&&label){fetch(CONFIG.endpoint,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({token:CONFIG.uploadToken,action:'delete',cadence:cad,label:label})}).catch(()=>{});}
+ showSync('Removed “'+(label||'')+'” from the '+cad+' series'+(CONFIG.endpoint?' (and the Google Sheet)':'')+'.');
+};
+window.clearAllPeriods=()=>{
+ if(!confirm('Remove ALL stored periods'+(CONFIG.endpoint?' from this dashboard AND the connected Google Sheet':'')+'? This cannot be undone.'))return;
+ SERIES={monthly:[],quarterly:[],yearly:[]};cacheLocal();renderStored();refreshDataState();renderTrends(curCad);
+ if(CONFIG.endpoint){fetch(CONFIG.endpoint,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({token:CONFIG.uploadToken,action:'clear'})}).catch(()=>{});}
+ showSync('Cleared all stored periods'+(CONFIG.endpoint?' (local + Google Sheet)':'')+'. Upload your current file to start fresh.');
+};
 
 /* ---------- persistence: backend + local cache ---------- */
 function cacheLocal(){try{localStorage.setItem('ecm_series',JSON.stringify(SERIES))}catch(e){}}
@@ -879,6 +891,7 @@ function renderPyramid(cad){
 loadCacheInit();loadKPI();
 refreshDataState();renderTrends('monthly');renderKPI();
 document.querySelectorAll('.es-go').forEach(b=>b.onclick=gotoInput);
+document.getElementById('clearAll').onclick=clearAllPeriods;
 document.getElementById('kpiReset').onclick=()=>{KIN={...KDEF};persistKPI();renderKPI();};
 </script>
 </body>
