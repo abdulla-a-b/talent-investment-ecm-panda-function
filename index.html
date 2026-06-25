@@ -458,7 +458,7 @@ function deriveLatest(p){
    index,index_components:comp,cxv};
 }
 function gotoInput(){const b=document.querySelector('.tab[data-v=input]');if(b)b.click()}
-function updateAsof(){const p=latestPeriod(),el=document.getElementById('asofline');
+function updateAsof(msg){const p=latestPeriod(),el=document.getElementById('asofline');if(msg){el.textContent=msg;return;}
  el.textContent=p?('Latest period: '+p.label+'  \u00b7  '+(p.total||0).toLocaleString()+' employees'):'No data yet \u2014 upload a master file in the C&B & Headcount Input tab to begin.';}
 function applyBranding(){const o=(CONFIG.orgName||'').trim();
  document.getElementById('brand').innerHTML=(o?o+' \u00b7 ECM':'ECM')+' <small>Workforce Intelligence System</small>';
@@ -799,17 +799,28 @@ async function persist(cad,period){
    body:JSON.stringify({token:CONFIG.uploadToken,cadence:cad,period})});}
  catch(e){showSync('Backend save failed — kept locally. '+e.message)}
 }
-async function loadBackend(){
- // load any cached local first
- try{const c=localStorage.getItem('ecm_series');if(c){const cached=JSON.parse(c);['monthly','quarterly','yearly'].forEach(cad=>{(cached[cad]||[]).forEach(p=>{if(!p.recon){const a=SERIES[cad];const i=a.findIndex(x=>x.label===p.label);if(i>=0)a[i]=p;else a.push(p)}})});}}catch(e){}
- if(CONFIG.endpoint){try{
-   const r=await fetch(CONFIG.endpoint+'?token='+encodeURIComponent(CONFIG.uploadToken));
-   const data=await r.json();
-   if(data&&data.periods){data.periods.forEach(({cadence,period})=>{const a=SERIES[cadence]||(SERIES[cadence]=[]);const i=a.findIndex(x=>x.label===period.label);if(i>=0)a[i]=period;else a.push(period)});}
- }catch(e){}}
- renderStored();showSync('');refreshDataState();
- if(curCad)renderTrends(curCad);
+function mergePeriods(src){['monthly','quarterly','yearly'].forEach(cad=>{(src[cad]||[]).forEach(p=>{const a=SERIES[cad]||(SERIES[cad]=[]);const i=a.findIndex(x=>x.label===p.label);if(i>=0)a[i]=p;else a.push(p)})})}
+async function loadAll(){
+ // 1) instant: local browser cache
+ try{const c=localStorage.getItem('ecm_series');if(c)mergePeriods(JSON.parse(c));}catch(e){}
+ try{renderStored()}catch(e){}
+ refreshDataState();renderTrends(curCad||'monthly');
+ // 2) authoritative: Google Sheet backend (loads on EVERY page open, not just after unlock)
+ if(CONFIG.endpoint){
+   updateAsof('Loading saved data from the Google Sheet\u2026');
+   try{
+     const r=await fetch(CONFIG.endpoint+'?token='+encodeURIComponent(CONFIG.uploadToken));
+     const data=await r.json();
+     if(data&&Array.isArray(data.periods)){
+       data.periods.forEach(({cadence,period})=>{const a=SERIES[cadence]||(SERIES[cadence]=[]);const i=a.findIndex(x=>x.label===period.label);if(i>=0)a[i]=period;else a.push(period)});
+       cacheLocal();
+     }
+   }catch(e){console.warn('backend load failed',e);}
+   try{renderStored()}catch(e){}
+   refreshDataState();renderTrends(curCad||'monthly');
+ }
 }
+const loadBackend=loadAll;   // unlock handler reuses the same loader
 
 /* ---------- VALUE KPIs / EVI ---------- */
 let AUTO={q1hc:0,q1cost:0,q2cost:0};
@@ -941,8 +952,7 @@ function renderPyramid(cad){
 }
 
 /* ---------- init ---------- */
-loadCacheInit();loadKPI();
-refreshDataState();renderTrends('monthly');renderKPI();
+loadKPI();loadAll();renderKPI();
 document.querySelectorAll('.es-go').forEach(b=>b.onclick=gotoInput);
 document.getElementById('clearAll').onclick=clearAllPeriods;
 document.getElementById('kpiReset').onclick=()=>{KIN={...KDEF};persistKPI();renderKPI();};
